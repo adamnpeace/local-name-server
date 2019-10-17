@@ -23,66 +23,93 @@ TIMEOUT = 5
 ROOTNS_DN = "f.root-servers.net."
 ROOTNS_IN_ADDR = "192.5.5.241"
 
-# cache objects
-class RR_A_Cache:
-    def __init__(self):
-        self.cache = dict()     # domain_name -> [(ip_address, expiration_time, authoritative)]
 
-    def put(self,domain_name,ip_addr,expiration,authoritative=False):
+# cache objects
+class RR_A_Cache:  # A cache
+    """ 
+    Cache 
+    Methods
+    -------
+    put()
+        Put a domain name (DN) and corresponding ip address into the cache, with an associated TTL
+    contains()
+        Check if cache contains an IP for a given DN
+    getIpAddresses()
+    getExpiration()
+    getAuthoritative()
+    """
+
+    def __init__(self):
+        self.cache = (
+            dict()
+        )  # domain_name -> [(ip_address, expiration_time, authoritative)]
+
+    def put(self, domain_name, ip_addr, expiration, authoritative=False):
         if domain_name not in self.cache:
             self.cache[domain_name] = dict()
-        self.cache[domain_name][ip_addr] = (expiration,authoritative)
+        self.cache[domain_name][ip_addr] = (expiration, authoritative)
 
-    def contains(self,domain_name):
+    def contains(self, domain_name):
         return domain_name in self.cache
-    
-    def getIpAddresses(self,domain_name):
+
+    def getIpAddresses(self, domain_name):
         return list(self.cache[domain_name].keys())
 
-    def getExpiration(self,domain_name,ip_address):
+    def getExpiration(self, domain_name, ip_address):
         return self.cache[domain_name][ip_address][0]
-    
-    def getAuthoritative(self,domain_name,ip_address):
+
+    def getAuthoritative(self, domain_name, ip_address):
         return self.cache[domain_name][ip_address][1]
 
     def __str__(self):
         return str(self.cache)
 
-class CN_Cache:
+
+class CN_Cache:  # Canonical Name Cache
     def __init__(self):
-        self.cache = dict()     # domain_name -> (cname, expiration_time)
+        self.cache = dict()  # domain_name -> (cname, expiration_time)
 
-    def put(self,domain_name,canonical_name,expiration):
-        self.cache[domain_name] = (canonical_name,expiration)
+    def put(self, domain_name, canonical_name, expiration):
+        self.cache[domain_name] = (canonical_name, expiration)
 
-    def contains(self,domain_name):
+    def contains(self, domain_name):
         return domain_name in self.cache
 
     def getCanonicalName(self, domain_name):
         return self.cache[domain_name][0]
 
-    def getCanonicalNameExpiration(self,domain_name):
+    def getCanonicalNameExpiration(self, domain_name):
         return self.cache[domain_name][1]
 
     def __str__(self):
         return str(self.cache)
 
-class RR_NS_Cache:
+
+class RR_NS_Cache:  # Nameserver Cache
     def __init__(self):
-        self.cache = dict()     # domain_name -> (NS_record,expiration_time, authoritative)
-        
-    def put(self,zone_domain_name,name_server_domain_name,expiration,authoritative):
+        self.cache = dict()  # domain_name -> (NS_record,expiration_time, authoritative)
+
+    def put(self, zone_domain_name, name_server_domain_name, expiration, authoritative):
         if zone_domain_name not in self.cache:
             self.cache[zone_domain_name] = OrderedDict()
-        self.cache[zone_domain_name][name_server_domain_name] = (expiration,authoritative)
+        self.cache[zone_domain_name][name_server_domain_name] = (
+            expiration,
+            authoritative,
+        )
 
-    def get(self,zone_domain_name):
+    def get(self, zone_domain_name):
         list_name_servers = []
         for name_server in self.cache[zone_domain_name]:
-            list_name_servers += [(name_server,self.cache[zone_domain_name][name_server][0],self.cache[zone_domain_name][name_server][1])]
+            list_name_servers += [
+                (
+                    name_server,
+                    self.cache[zone_domain_name][name_server][0],
+                    self.cache[zone_domain_name][name_server][1],
+                )
+            ]
         return list_name_servers
 
-    def contains(self,zone_domain_name):
+    def contains(self, zone_domain_name):
         return zone_domain_name in self.cache
 
     def __str__(self):
@@ -90,71 +117,84 @@ class RR_NS_Cache:
 
 
 # >>> entry point of ncsdns.py <<<
+def ncsdns():
+    # Seed random number generator with current time of day:
+    now = int(time())
+    seed(now)
 
-# Seed random number generator with current time of day:
-now = int(time())
-seed(now)
+    # Initialize the pretty printer:
+    pp = pprint.PrettyPrinter(indent=3)
 
-# Initialize the pretty printer:
-pp = pprint.PrettyPrinter(indent=3)
+    # Initialize the cache data structures
+    acache = RR_A_Cache()
+    acache.put(
+        DomainName(ROOTNS_DN),
+        InetAddr(ROOTNS_IN_ADDR),
+        expiration=MAXINT,
+        authoritative=True,
+    )
 
-# Initialize the cache data structures
-acache = RR_A_Cache()
-acache.put(DomainName(ROOTNS_DN),InetAddr(ROOTNS_IN_ADDR),expiration=MAXINT,authoritative=True)
+    nscache = RR_NS_Cache()
+    nscache.put(
+        DomainName("."), DomainName(ROOTNS_DN), expiration=MAXINT, authoritative=True
+    )
 
-nscache = RR_NS_Cache()
-nscache.put(DomainName("."),DomainName(ROOTNS_DN),expiration=MAXINT,authoritative=True)
+    cnamecache = CN_Cache()
 
-cnamecache = CN_Cache()
+    # Parse the command line and assign us an ephemeral port to listen on:
+    def check_port(option, opt_str, value, parser):
+        if value < 32768 or value > 61000:
+            raise OptionValueError("need 32768 <= port <= 61000")
+        parser.values.port = value
 
-# Parse the command line and assign us an ephemeral port to listen on:
-def check_port(option, opt_str, value, parser):
-    if value < 32768 or value > 61000:
-        raise OptionValueError("need 32768 <= port <= 61000")
-    parser.values.port = value
+    parser = OptionParser()
+    parser.add_option(
+        "-p",
+        "--port",
+        dest="port",
+        type="int",
+        action="callback",
+        callback=check_port,
+        metavar="PORTNO",
+        default=0,
+        help="UDP port to listen on (default: use an unused ephemeral port)",
+    )
+    (options, args) = parser.parse_args()
 
-parser = OptionParser()
-parser.add_option("-p", "--port", dest="port", type="int", action="callback",
-                  callback=check_port, metavar="PORTNO", default=0,
-                  help="UDP port to listen on (default: use an unused ephemeral port)")
-(options, args) = parser.parse_args()
+    ################################
 
-# Create a server socket to accept incoming connections from DNS
-# client resolvers (stub resolvers):
-ss = socket(AF_INET, SOCK_DGRAM)
-ss.bind(("127.0.0.1", options.port))
-serveripaddr, serverport = ss.getsockname()
+    setdefaulttimeout(TIMEOUT)
+    cs = socket(AF_INET, SOCK_DGRAM)
 
-# NOTE: In order to pass the test suite, the following must be the
-# first line that your dns server prints and flushes within one
-# second, to sys.stdout:
-print("%s: listening on port %d" % (sys.argv[0], serverport))
-sys.stdout.flush()
+    domain = DomainName("www.google.com")
 
-# Create a client socket on which to send requests to other DNS
-# servers:
-setdefaulttimeout(TIMEOUT)
-cs = socket(AF_INET, SOCK_DGRAM)
+    # outHeader = Header(20001, 0, 0, qr=0, qdcount=1)
+    outHeader = Header(
+        19876,
+        0,
+        0,
+        qdcount=1,
+        ancount=0,
+        nscount=0,
+        arcount=0,
+        qr=False,
+        aa=False,
+        tc=False,
+        rd=False,
+        ra=False,
+    )
+    outQuestion = QE(dn=domain, type=1)
+    print("a", hexdump(outHeader.pack()))
+    # print("b", hexdump(outQuestion.pack()))
+    payload = b"".join([outHeader.pack(), outQuestion.pack()])
 
-# This is a simple, single-threaded server that takes successive
-# connections with each iteration of the following loop:
-while 1:
-    (data, client_address,) = ss.recvfrom(512) # DNS limits UDP msgs to 512 bytes
-    if not data:
-        log.error("client provided no data")
-        continue
-    
-    print("Query received from client is:\n%s" %(hexdump(data)))
+    print("Sent", hexdump(payload))
+    cs.sendto(payload, (ROOTNS_DN, 53))
+    data = cs.recvfrom(512)
+    print("Recvd: ", hexdump(data[0]))
+    print(data)
+    cs.close()
 
-    #
-    # TODO: Insert code here to perform the recursive DNS lookup;
-    #       putting the result in the "reply" variable.
-    #
-    # NOTE: You can (and are encouraged to) create external functions
-    #       that you call from here.
-    #
 
-    logger.log(DEBUG2, "our reply in full:")
-    logger.log(DEBUG2, hexdump(reply))
-
-    ss.sendto(reply, client_address)
+if __name__ == "__main__":
+    ncsdns()
