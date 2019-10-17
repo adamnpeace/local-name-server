@@ -184,6 +184,8 @@ def ncsdns():
 
     # Main Server Loop
     while 1:
+
+        # try:
         (data, client_address) = ss.recvfrom(512)  # DNS limits UDP msgs to 512 bytes
 
         if not data and not Header.fromData(data)._qdcount == 1:
@@ -194,7 +196,7 @@ def ncsdns():
         queryQuestion = QE.fromData(data, offset=12)
 
         def getAnswer(domain, queryId):
-            def addToCache(domain, queryId):
+            def addToCache(domain, targetAddr, queryId):
                 cReqHeader = Header(
                     queryId,
                     opcode=Header.OPCODE_QUERY,
@@ -211,7 +213,7 @@ def ncsdns():
                 )
                 cReqQuestion = QE(dn=domain, type=QE.TYPE_A)
                 payload = cReqHeader.pack() + cReqQuestion.pack()
-                cs.sendto(payload, (ROOTNS_IN_ADDR, 53))
+                cs.sendto(payload, (targetAddr, 53))
 
                 data = cs.recvfrom(512)[0]
 
@@ -225,7 +227,7 @@ def ncsdns():
                         curRR = RR.fromData(data, offset=offset)
 
                         def processRR(curRR):
-                            print(curRR)
+                            # print(currentRR)
                             if type(curRR) == RR_NS:
                                 resNS.append(curRR)
                             elif type(curRR) == RR_A:
@@ -252,9 +254,27 @@ def ncsdns():
                         rr._dn, rr._addr, (time() + rr._ttl), authoritative=False
                     )
 
-            addToCache(domain, queryId)
+            print(domain.__str__())
 
-        getAnswer(queryQuestion._dn, queryHeader._id)
+            if acache.contains(domain):
+                return acache.getIpAddresses(domain)
+            else:
+                if domain.parent() == DomainName("."):
+                    addToCache(domain, ROOTNS_IN_ADDR, queryId)
+                    print(nscache.get(domain)[0][0], type(nscache.get(domain)[0][0]))
+                    print(
+                        hexdump(acache.getIpAddresses(nscache.get(domain)[0][0])[0]),
+                        type(acache.getIpAddresses(nscache.get(domain)[0][0])),
+                    )
+                    return acache.getIpAddresses(nscache.get(domain)[0][0])
+                else:
+                    parent = getAnswer(domain.parent(), queryId)
+                    print("p", parent)
+                    addToCache(domain, parent, queryId)
+                    print("IP", acache.getIpAddresses(domain))
+                    return acache.getIpAddresses(domain)
+
+        print(getAnswer(queryQuestion._dn, queryHeader._id))
 
         def sendEmptyRes(domain):
             resHeader = Header(
@@ -282,6 +302,9 @@ def ncsdns():
 
         sendEmptyRes(queryQuestion._dn)
         print("Done")
+        # except timeout:
+        #   pass
+        #    sendReply()
 
 
 if __name__ == "__main__":
