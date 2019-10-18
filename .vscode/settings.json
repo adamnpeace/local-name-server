@@ -1,0 +1,4 @@
+{
+    "python.pythonPath": "/Users/ap/.local/share/virtualenvs/local-dns-DKloNtoN/bin/python",
+    "python.formatting.provider": "black"
+}

@@ -260,19 +260,34 @@ def ncsdns():
                 return acache.getIpAddresses(domain)
             else:
                 if domain.parent() == DomainName("."):
-                    addToCache(domain, ROOTNS_IN_ADDR, queryId)
-                    print(nscache.get(domain)[0][0], type(nscache.get(domain)[0][0]))
-                    print(
-                        hexdump(acache.getIpAddresses(nscache.get(domain)[0][0])[0]),
-                        type(acache.getIpAddresses(nscache.get(domain)[0][0])),
-                    )
-                    return acache.getIpAddresses(nscache.get(domain)[0][0])
+                    # Domain is TLD
+                    addToCache(
+                        domain, ROOTNS_IN_ADDR, queryId
+                    )  # Go to Root NS for TLD IP
+                    resIP = InetAddr.fromNetwork(
+                        acache.getIpAddresses(nscache.get(domain)[0][0])[0]
+                    ).__str__()  # IP of TLD
+                    print("IP of {} is {}".format(domain, resIP))
+                    return resIP
                 else:
-                    parent = getAnswer(domain.parent(), queryId)
-                    print("p", parent)
-                    addToCache(domain, parent, queryId)
-                    print("IP", acache.getIpAddresses(domain))
-                    return acache.getIpAddresses(domain)
+                    # Domain is < TLD
+                    parentIP = getAnswer(
+                        domain.parent(), queryId
+                    )  # Get IP of parent domain
+                    print("IP of {} is {}".format(domain.parent(), parentIP))
+                    addToCache(
+                        domain, parentIP, queryId
+                    )  # Go to parent to cache current domain records
+                    try:
+                        resIP = InetAddr.fromNetwork(
+                            acache.getIpAddresses(domain)[0]
+                        ).__str__()
+                    except:
+                        resIP = InetAddr.fromNetwork(
+                            acache.getIpAddresses(nscache.get(domain)[0][0])[0]
+                        ).__str__()  # Go to cache to find current domain IP
+
+                    return resIP
 
         print(getAnswer(queryQuestion._dn, queryHeader._id))
 
