@@ -220,6 +220,7 @@ def ncsdns():
                 def getRecordsFromData(data):
                     resNS = []
                     resA = []
+                    resCNAME = []
                     headerLen = len(Header.fromData(data))
                     questionLen = len(QE.fromData(data, offset=headerLen))
                     offset = headerLen + questionLen
@@ -234,6 +235,8 @@ def ncsdns():
                                 resA.append(curRR)
                             elif type(curRR) == RR_AAAA:
                                 pass
+                            elif type(curRR) == RR_CNAME:
+                                resCNAME.append(curRR)
                             else:
                                 logger.log(DEBUG2, "Unknown RR: {}".format(curRR))
 
@@ -241,9 +244,9 @@ def ncsdns():
 
                         offset += curRR[1]
                         # print("offset: {}/{}".format(offset, dataPayloadLen))
-                    return resNS, resA
+                    return resNS, resA, resCNAME
 
-                csResNS, csResA = getRecordsFromData(data)
+                csResNS, csResA, csResCNAME = getRecordsFromData(data)
 
                 for rr in csResNS:
                     print("Cached NS {}".format(rr.__str__()))
@@ -253,6 +256,9 @@ def ncsdns():
                     acache.put(
                         rr._dn, rr._addr, (time() + rr._ttl), authoritative=False
                     )
+                for rr in csResCNAME:
+                    print("Cached CNAME  {}".format(rr.__str__()))
+                    cnamecache.put(rr._dn, rr._cname, (time() + rr._ttl))
 
             print(domain.__str__())
 
@@ -278,18 +284,33 @@ def ncsdns():
                     addToCache(
                         domain, parentIP, queryId
                     )  # Go to parent to cache current domain records
-                    try:
+                    if nscache.contains(domain):
+                        # NS record exists for domain
+                        if acache.contains(nscache.get(domain)[0][0]):
+                            # A record exists for this NS record
+                            resIP = InetAddr.fromNetwork(
+                                acache.getIpAddresses(nscache.get(domain)[0][0])[0]
+                            ).__str__()  # Go to cache to find current domain IP
+                        else:
+                            # No A record exists for this NS record
+                            resIP = getAnswer(nscache.get(domain)[0][0], queryId)
+                        # NS record points
+
+                    elif acache.contains(domain):
+                        # NS record doesn't exist but A record does
                         resIP = InetAddr.fromNetwork(
                             acache.getIpAddresses(domain)[0]
                         ).__str__()
-                    except:
-                        resIP = InetAddr.fromNetwork(
-                            acache.getIpAddresses(nscache.get(domain)[0][0])[0]
-                        ).__str__()  # Go to cache to find current domain IP
-
+                    elif cnamecache.contains(domain):
+                        # NS/A records don't exist but CNAME does
+                        resIP = getAnswer(cnamecache.getCanonicalName(domain), queryId)
+                    else:
+                        # There's a problem, the domain wasn't cached
+                        raise Exception
                     return resIP
 
-        print(getAnswer(queryQuestion._dn, queryHeader._id))
+        answerIP = getAnswer(queryQuestion._dn, queryHeader._id)
+        print(answerIP)
 
         def sendEmptyRes(domain):
             resHeader = Header(
