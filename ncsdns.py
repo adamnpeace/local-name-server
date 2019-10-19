@@ -195,10 +195,10 @@ def ncsdns():
         queryHeader = Header.fromData(data)
         queryQuestion = QE.fromData(data, offset=12)
 
-        def getAnswer(domain, queryId):
-            def addToCache(domain, targetAddr, queryId):
+        def getAnswer(domain):
+            def addToCache(domain, targetAddr):
                 cReqHeader = Header(
-                    queryId,
+                    50000,
                     opcode=Header.OPCODE_QUERY,
                     rcode=Header.RCODE_NOERR,
                     qr=0,  # 1 -response, 0=query
@@ -267,9 +267,7 @@ def ncsdns():
             else:
                 if domain.parent() == DomainName("."):
                     # Domain is TLD
-                    addToCache(
-                        domain, ROOTNS_IN_ADDR, queryId
-                    )  # Go to Root NS for TLD IP
+                    addToCache(domain, ROOTNS_IN_ADDR)  # Go to Root NS for TLD IP
                     resIP = InetAddr.fromNetwork(
                         acache.getIpAddresses(nscache.get(domain)[0][0])[0]
                     ).__str__()  # IP of TLD
@@ -277,12 +275,10 @@ def ncsdns():
                     return resIP
                 else:
                     # Domain is < TLD
-                    parentIP = getAnswer(
-                        domain.parent(), queryId
-                    )  # Get IP of parent domain
+                    parentIP = getAnswer(domain.parent())  # Get IP of parent domain
                     print("IP of {} is {}".format(domain.parent(), parentIP))
                     addToCache(
-                        domain, parentIP, queryId
+                        domain, parentIP
                     )  # Go to parent to cache current domain records
                     if nscache.contains(domain):
                         # NS record exists for domain
@@ -293,7 +289,7 @@ def ncsdns():
                             ).__str__()  # Go to cache to find current domain IP
                         else:
                             # No A record exists for this NS record
-                            resIP = getAnswer(nscache.get(domain)[0][0], queryId)
+                            resIP = getAnswer(nscache.get(domain)[0][0])
                         # NS record points
 
                     elif acache.contains(domain):
@@ -303,13 +299,13 @@ def ncsdns():
                         ).__str__()
                     elif cnamecache.contains(domain):
                         # NS/A records don't exist but CNAME does
-                        resIP = getAnswer(cnamecache.getCanonicalName(domain), queryId)
+                        resIP = getAnswer(cnamecache.getCanonicalName(domain))
                     else:
                         # There's a problem, the domain wasn't cached
                         raise Exception
                     return resIP
 
-        answerIP = getAnswer(queryQuestion._dn, queryHeader._id)
+        answerIP = getAnswer(queryQuestion._dn)
         print(answerIP)
 
         def sendEmptyRes(domain):
@@ -336,7 +332,29 @@ def ncsdns():
             logger.log(DEBUG2, hexdump(payload))
             ss.sendto(payload, client_address)
 
-        sendEmptyRes(queryQuestion._dn)
+        def sendRes(domain, resIP):
+            resHeader = Header(
+                queryHeader._id,
+                opcode=Header.OPCODE_QUERY,
+                rcode=Header.RCODE_NOERR,
+                qr=1,  # 1 -response, 0=query
+                qdcount=1,  # Questions #
+                nscount=1,  # NS Entries #
+                ancount=0,  # Answer #
+                arcount=0,  # Addition #
+                aa=False,  # Autho
+                tc=False,  # Truncation
+                rd=False,  # Recursion Desired
+                ra=False,  # Recursion Available
+            )
+            resQuestion = QE(type=QE.TYPE_A, dn=domain)
+            reply = RR_A(domain, 172800, InetAddr(resIP).toNetwork())
+            payload = resHeader.pack() + resQuestion.pack() + reply.pack()
+            logger.log(DEBUG2, "our reply in full:")
+            logger.log(DEBUG2, hexdump(payload))
+            ss.sendto(payload, client_address)
+
+        sendRes(queryQuestion._dn, answerIP)
         print("Done")
         # except timeout:
         #   pass
