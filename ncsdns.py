@@ -118,6 +118,117 @@ class RR_NS_Cache:  # Nameserver Cache
         return str(self.cache)
 
 
+def getRecordsFromData(data):
+    resNS = []
+    resA = []
+    resCNAME = []
+    headerLen = len(Header.fromData(data))
+    questionLen = len(QE.fromData(data, offset=headerLen))
+    offset = headerLen + questionLen
+    while offset < len(data):
+        curRR = RR.fromData(data, offset=offset)
+
+        def processRR(curRR):
+            # print(currentRR)
+            if type(curRR) == RR_NS:
+                resNS.append(curRR)
+            elif type(curRR) == RR_A:
+                resA.append(curRR)
+            elif type(curRR) == RR_AAAA:
+                pass
+            elif type(curRR) == RR_CNAME:
+                resCNAME.append(curRR)
+            else:
+                logger.log(DEBUG2, "Unknown RR: {}".format(curRR))
+
+        processRR(curRR[0])
+
+        offset += curRR[1]
+        # print("offset: {}/{}".format(offset, dataPayloadLen))
+    return resNS, resA, resCNAME
+
+
+def updateCache(domain, targetAddr, cache, cs):
+    cReqHeader = Header(
+        50000,
+        opcode=Header.OPCODE_QUERY,
+        rcode=Header.RCODE_NOERR,
+        qr=0,  # 1 -response, 0=query
+        qdcount=1,  # Questions #
+        nscount=0,  # NS Entries #
+        ancount=0,  # Answer #
+        arcount=0,  # Addition #
+        aa=False,  # Autho
+        tc=False,  # Truncation
+        rd=False,  # Recursion Desired
+        ra=False,  # Recursion Available
+    )
+    cReqQuestion = QE(dn=domain, type=QE.TYPE_A)
+    payload = cReqHeader.pack() + cReqQuestion.pack()
+    cs.sendto(payload, (targetAddr, 53))
+
+    data = cs.recvfrom(512)[0]
+
+    csResNS, csResA, csResCNAME = getRecordsFromData(data)
+
+    for rr in csResNS:
+        print("Cached NS {}".format(rr.__str__()))
+        cache["ns"].put(rr._dn, rr._nsdn, (time() + rr._ttl), True)
+    for rr in csResA:
+        print("Cached A  {}".format(rr.__str__()))
+        cache["a"].put(rr._dn, rr._addr, (time() + rr._ttl), authoritative=False)
+    for rr in csResCNAME:
+        print("Cached CNAME  {}".format(rr.__str__()))
+        cache["cname"].put(rr._dn, rr._cname, (time() + rr._ttl))
+
+
+def getIP(domain, cache, cs):
+
+    print(domain.__str__())
+
+    if cache["a"].contains(domain):
+        return cache["a"].getIpAddresses(domain)
+    else:
+        if domain.parent() == DomainName("."):
+            # Domain is TLD
+            updateCache(domain, ROOTNS_IN_ADDR, cache, cs)  # Go to Root NS for TLD IP
+            resIP = InetAddr.fromNetwork(
+                cache["a"].getIpAddresses(cache["ns"].get(domain)[0][0])[0]
+            ).__str__()  # IP of TLD
+            print("IP of {} is {}".format(domain, resIP))
+            return resIP
+        else:
+            # Domain is < TLD
+            parentIP = getIP(domain.parent(), cache, cs)  # Get IP of parent domain
+            updateCache(
+                domain, parentIP, cache, cs
+            )  # Go to parent to cache current domain records
+            if cache["ns"].contains(domain):
+                # NS record exists for domain
+                if cache["a"].contains(cache["ns"].get(domain)[0][0]):
+                    # A record exists for this NS record
+                    resIP = InetAddr.fromNetwork(
+                        cache["a"].getIpAddresses(cache["ns"].get(domain)[0][0])[0]
+                    ).__str__()  # Go to cache to find current domain IP
+                else:
+                    # No A record exists for this NS record
+                    resIP = getIP(cache["ns"].get(domain)[0][0], cache, cs)
+                # NS record points
+
+            elif cache["a"].contains(domain):
+                # NS record doesn't exist but A record does
+                resIP = InetAddr.fromNetwork(
+                    cache["a"].getIpAddresses(domain)[0]
+                ).__str__()
+            elif cache["cname"].contains(domain):
+                # NS/A records don't exist but CNAME does
+                resIP = getIP(cache["cname"].getCanonicalName(domain), cache, cs)
+            else:
+                # There's a problem, the domain wasn't cached
+                raise Exception
+            return resIP
+
+
 # >>> entry point of ncsdns.py <<<
 def ncsdns():
     # Seed random number generator with current time of day:
@@ -126,22 +237,22 @@ def ncsdns():
 
     # Initialize the pretty printer:
     pp = pprint.PrettyPrinter(indent=3)
-
+    cache = {}
     # Initialize the cache data structures
-    acache = RR_A_Cache()
-    acache.put(
+    cache["a"] = RR_A_Cache()
+    cache["a"].put(
         DomainName(ROOTNS_DN),
         InetAddr(ROOTNS_IN_ADDR),
         expiration=MAXINT,
         authoritative=True,
     )
 
-    nscache = RR_NS_Cache()
-    nscache.put(
+    cache["ns"] = RR_NS_Cache()
+    cache["ns"].put(
         DomainName("."), DomainName(ROOTNS_DN), expiration=MAXINT, authoritative=True
     )
 
-    cnamecache = CN_Cache()
+    cache["cname"] = CN_Cache()
 
     # Parse the command line and assign us an ephemeral port to listen on:
     def check_port(option, opt_str, value, parser):
@@ -186,151 +297,18 @@ def ncsdns():
     while 1:
 
         # try:
+        # Get request from client
         (data, client_address) = ss.recvfrom(512)  # DNS limits UDP msgs to 512 bytes
 
         if not data and not Header.fromData(data)._qdcount == 1:
-            log.error("client provided no data")
+            logger.log(DEBUG2, "client provided no data")
             continue
 
         queryHeader = Header.fromData(data)
         queryQuestion = QE.fromData(data, offset=12)
 
-        def getAnswer(domain):
-            def addToCache(domain, targetAddr):
-                cReqHeader = Header(
-                    50000,
-                    opcode=Header.OPCODE_QUERY,
-                    rcode=Header.RCODE_NOERR,
-                    qr=0,  # 1 -response, 0=query
-                    qdcount=1,  # Questions #
-                    nscount=0,  # NS Entries #
-                    ancount=0,  # Answer #
-                    arcount=0,  # Addition #
-                    aa=False,  # Autho
-                    tc=False,  # Truncation
-                    rd=False,  # Recursion Desired
-                    ra=False,  # Recursion Available
-                )
-                cReqQuestion = QE(dn=domain, type=QE.TYPE_A)
-                payload = cReqHeader.pack() + cReqQuestion.pack()
-                cs.sendto(payload, (targetAddr, 53))
-
-                data = cs.recvfrom(512)[0]
-
-                def getRecordsFromData(data):
-                    resNS = []
-                    resA = []
-                    resCNAME = []
-                    headerLen = len(Header.fromData(data))
-                    questionLen = len(QE.fromData(data, offset=headerLen))
-                    offset = headerLen + questionLen
-                    while offset < len(data):
-                        curRR = RR.fromData(data, offset=offset)
-
-                        def processRR(curRR):
-                            # print(currentRR)
-                            if type(curRR) == RR_NS:
-                                resNS.append(curRR)
-                            elif type(curRR) == RR_A:
-                                resA.append(curRR)
-                            elif type(curRR) == RR_AAAA:
-                                pass
-                            elif type(curRR) == RR_CNAME:
-                                resCNAME.append(curRR)
-                            else:
-                                logger.log(DEBUG2, "Unknown RR: {}".format(curRR))
-
-                        processRR(curRR[0])
-
-                        offset += curRR[1]
-                        # print("offset: {}/{}".format(offset, dataPayloadLen))
-                    return resNS, resA, resCNAME
-
-                csResNS, csResA, csResCNAME = getRecordsFromData(data)
-
-                for rr in csResNS:
-                    print("Cached NS {}".format(rr.__str__()))
-                    nscache.put(rr._dn, rr._nsdn, (time() + rr._ttl), True)
-                for rr in csResA:
-                    print("Cached A  {}".format(rr.__str__()))
-                    acache.put(
-                        rr._dn, rr._addr, (time() + rr._ttl), authoritative=False
-                    )
-                for rr in csResCNAME:
-                    print("Cached CNAME  {}".format(rr.__str__()))
-                    cnamecache.put(rr._dn, rr._cname, (time() + rr._ttl))
-
-            print(domain.__str__())
-
-            if acache.contains(domain):
-                return acache.getIpAddresses(domain)
-            else:
-                if domain.parent() == DomainName("."):
-                    # Domain is TLD
-                    addToCache(domain, ROOTNS_IN_ADDR)  # Go to Root NS for TLD IP
-                    resIP = InetAddr.fromNetwork(
-                        acache.getIpAddresses(nscache.get(domain)[0][0])[0]
-                    ).__str__()  # IP of TLD
-                    print("IP of {} is {}".format(domain, resIP))
-                    return resIP
-                else:
-                    # Domain is < TLD
-                    parentIP = getAnswer(domain.parent())  # Get IP of parent domain
-                    print("IP of {} is {}".format(domain.parent(), parentIP))
-                    addToCache(
-                        domain, parentIP
-                    )  # Go to parent to cache current domain records
-                    if nscache.contains(domain):
-                        # NS record exists for domain
-                        if acache.contains(nscache.get(domain)[0][0]):
-                            # A record exists for this NS record
-                            resIP = InetAddr.fromNetwork(
-                                acache.getIpAddresses(nscache.get(domain)[0][0])[0]
-                            ).__str__()  # Go to cache to find current domain IP
-                        else:
-                            # No A record exists for this NS record
-                            resIP = getAnswer(nscache.get(domain)[0][0])
-                        # NS record points
-
-                    elif acache.contains(domain):
-                        # NS record doesn't exist but A record does
-                        resIP = InetAddr.fromNetwork(
-                            acache.getIpAddresses(domain)[0]
-                        ).__str__()
-                    elif cnamecache.contains(domain):
-                        # NS/A records don't exist but CNAME does
-                        resIP = getAnswer(cnamecache.getCanonicalName(domain))
-                    else:
-                        # There's a problem, the domain wasn't cached
-                        raise Exception
-                    return resIP
-
-        answerIP = getAnswer(queryQuestion._dn)
+        answerIP = getIP(queryQuestion._dn, cache, cs)
         print(answerIP)
-
-        def sendEmptyRes(domain):
-            resHeader = Header(
-                queryHeader._id,
-                opcode=Header.OPCODE_QUERY,
-                rcode=Header.RCODE_NOERR,
-                qr=1,  # 1 -response, 0=query
-                qdcount=1,  # Questions #
-                nscount=1,  # NS Entries #
-                ancount=0,  # Answer #
-                arcount=0,  # Addition #
-                aa=False,  # Autho
-                tc=False,  # Truncation
-                rd=False,  # Recursion Desired
-                ra=False,  # Recursion Available
-            )
-            resQuestion = QE(type=QE.TYPE_A, dn=domain)
-            reply = RR_NS(
-                DomainName("org."), 172800, DomainName("b0.org.afilias-nst.org.")
-            )
-            payload = resHeader.pack() + resQuestion.pack() + reply.pack()
-            logger.log(DEBUG2, "our reply in full:")
-            logger.log(DEBUG2, hexdump(payload))
-            ss.sendto(payload, client_address)
 
         def sendRes(domain, resIP):
             resHeader = Header(
@@ -348,7 +326,7 @@ def ncsdns():
                 ra=False,  # Recursion Available
             )
             resQuestion = QE(type=QE.TYPE_A, dn=domain)
-            reply = RR_A(domain, 172800, InetAddr(resIP).toNetwork())
+            reply = RR_A(domain, 172800, cache["a"].getIpAddresses(domain)[0])
             payload = resHeader.pack() + resQuestion.pack() + reply.pack()
             logger.log(DEBUG2, "our reply in full:")
             logger.log(DEBUG2, hexdump(payload))
