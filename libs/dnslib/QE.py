@@ -37,9 +37,7 @@ class QE:
 
   def pack(self):
     """ Return a binary-packed string rep. """
-    l = [self._dn.pack().decode('unicode-escape'), 
-         struct.pack(">2H", self._type, QE.CLASS_IN).decode('unicode-escape')]
-    return ("".join(l)).encode('ISO-8859-1')
+    return self._dn.pack() + struct.pack(">2H", self._type, QE.CLASS_IN)
 
   def __copy__(self):
     """ Return a copy of this QE, recursively copying its members. """

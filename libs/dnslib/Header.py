@@ -206,8 +206,8 @@ class Header:
             (1 if self._rd else 0) << self.OFFSET_RD | \
             (1 if self._ra else 0) << self.OFFSET_RA | \
             self._rcode << self.OFFSET_RCODE
-    l = [ struct.pack(">H", self._id).decode('unicode-escape', 'backslashreplace'),
-           struct.pack(">H", flags).decode('unicode-escape'),
+    return struct.pack(">H", self._id) + \
+           struct.pack(">H", flags) + \
            struct.pack(">4H", self._qdcount, self._ancount, 
-                      self._nscount, self._arcount).decode('unicode-escape') ]
-    return ("".join(l)).encode('ISO-8859-1')
+                      self._nscount, self._arcount)
+    

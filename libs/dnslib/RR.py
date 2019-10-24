@@ -65,9 +65,7 @@ class RR:
     """ Pack this RR into a packed-binary string rep and return that
     string. """
     ttl = int(self._ttl)
-    l = [ self._dn.pack().decode('unicode-escape'), 
-          struct.pack(">2HlH", self._type, self._class, ttl, self._rdlength).decode('unicode-escape')]
-    return ("".join(l)).encode('ISO-8859-1')
+    return self._dn.pack() + struct.pack(">2HlH", self._type, self._class, ttl, self._rdlength)
 
   def __str__(self):
     """ Return a string rep. """
@@ -153,11 +151,8 @@ class RR_A(RR):
     self._inaddr = addr
 
   def pack(self):
-    """ Return a packed-binary rep. """
-    l = [RR.pack(self).decode('unicode-escape'), 
-         self._inaddr.decode('unicode-escape')]
-    return ("".join(l)).encode('ISO-8859-1')
-
+    """ Reutrn a packed-binary rep. """
+    return RR.pack(self) + self._inaddr	
 
   def __str__(self):
     """ Return a pretty-printable string rep. """
@@ -194,9 +189,7 @@ class RR_NS(RR):
   def pack(self):
     """ Return a packed-binary rep. """
     packed_nsdn = self._nsdn.pack()
-    l = [RR.pack(self).decode('unicode-escape'), 
-         packed_nsdn.decode('unicode-escape')]
-    return ("".join(l)).encode('ISO-8859-1')
+    return RR.pack(self) + packed_nsdn
 
 
   def __str__(self):
@@ -232,9 +225,7 @@ class RR_CNAME(RR):
   def pack(self):
     """ Return a packed-binary rep. """
     packed_cname = self._cname.pack()
-    l = [RR.pack(self).decode('unicode-escape'), 
-         packed_cname.decode('unicode-escape')]
-    return ("".join(l)).encode('ISO-8859-1')
+    return RR.pack(self) + packed_cname
 
   def __str__(self):
     """ Return a pretty-printable string rep. """
@@ -260,13 +251,11 @@ class RR_SOA(RR):
     self._minimum = minimum
 
   def pack(self):
-    packed_mname = self._mname.pack().decode('unicode-escape')
-    packed_rname = self._rname.pack().decode('unicode-escape')
-    s = ("".join([ RR.pack(self).decode('unicode-escape'), packed_mname, packed_rname,
-                  struct.pack(">5L", self._serial, self._refresh,
-                              self._retry, self._expire,
-                              self._minimum).decode('unicode-escape') ])).encode('ISO-8859-1')
-    return s
+    packed_mname = self._mname.pack()
+    packed_rname = self._rname.pack()
+    return RR.pack(self) + packed_mname + packed_rname + \
+            struct.pack(">5L", self._serial, self._refresh,
+                        self._retry, self._expire, self._minimum)
 
   def __copy__(self):
     res = RR_SOA(copy(self._dn), self._ttl, copy(self._mname),
@@ -296,14 +285,5 @@ class RR_AAAA(RR):
     return "%s\t%s" % (RR.__str__(self), inet_ntop(AF_INET6, self._inaddr),)
 
   def pack(self):
-    """ Return a packed-binary rep. """
-    s = [RR.pack(self).decode('unicode-escape'), 
-         self._inaddr.decode('unicode-escape')]
-    return ("".join(s)).encode('ISO-8859-1')
-
-  def __repr__(self):
-    """ Return a diagnostic string rep. """
-    return "(%s, %d, IN, AAAA, %s)" % (str(self._dn), self._ttl, 
-                                    inet_ntop(AF_INET6, self._inaddr),)
-
-
+    """ Reutrn a packed-binary rep. """
+    return RR.pack(self) + self._inaddr
