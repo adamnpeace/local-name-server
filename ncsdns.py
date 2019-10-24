@@ -25,7 +25,7 @@ TIMEOUT = 5
 ROOTNS_DN = "f.root-servers.net."
 ROOTNS_IN_ADDR = "192.5.5.241"
 
-
+stack = []
 # cache objects
 class RR_A_Cache:  # A cache
     """ 
@@ -183,50 +183,48 @@ def updateCache(domain, targetAddr, cache, cs):
 
 
 def getIP(domain, cache, cs):
-
-    print(domain.__str__())
+    global stack
+    stack.append(domain)
+    print("Looking for", domain.__str__())
 
     if cache["a"].contains(domain):
-        return cache["a"].getIpAddresses(domain)
-    else:
-        if domain.parent() == DomainName("."):
-            # Domain is TLD
-            updateCache(domain, ROOTNS_IN_ADDR, cache, cs)  # Go to Root NS for TLD IP
+        print("A record exists")
+        resIP = InetAddr.fromNetwork(cache["a"].getIpAddresses(domain)[0]).__str__()
+    elif cache["ns"].contains(domain):
+        print("Direct A doesn't exist, NS record exists for domain")
+        if cache["a"].contains(cache["ns"].get(domain)[0][0]):
+            print("Auth record exists for this NS record")
             resIP = InetAddr.fromNetwork(
                 cache["a"].getIpAddresses(cache["ns"].get(domain)[0][0])[0]
-            ).__str__()  # IP of TLD
+            ).__str__()  # Go to cache to find current domain IP
+        else:
+            print("No A record exists for this NS record")
+            resIP = getIP(cache["ns"].get(domain)[0][0], cache, cs)
+        # NS record points
+    elif cache["cname"].contains(domain):
+        print("NS/A records don't exist but CNAME does")
+        resIP = getIP(cache["cname"].getCanonicalName(domain), cache, cs)
+
+    else:
+        if domain.parent() == DomainName("."):
+            print("No cache found for domain but domain is TLD")
+            # Domain is TLD
+            updateCache(domain, ROOTNS_IN_ADDR, cache, cs)  # Go to Root NS for TLD IP
+            resIP = getIP(domain, cache, cs)
             print("IP of {} is {}".format(domain, resIP))
             return resIP
         else:
             # Domain is < TLD
-            parentIP = getIP(domain.parent(), cache, cs)  # Get IP of parent domain
+            print("No cache found for domain, searching at parent")
+            parentIP = getIP(
+                domain.parent(), cache, cs
+            )  # Get IP of parent domain RECURSE ENTRY
             updateCache(
                 domain, parentIP, cache, cs
             )  # Go to parent to cache current domain records
-            if cache["ns"].contains(domain):
-                # NS record exists for domain
-                if cache["a"].contains(cache["ns"].get(domain)[0][0]):
-                    # A record exists for this NS record
-                    resIP = InetAddr.fromNetwork(
-                        cache["a"].getIpAddresses(cache["ns"].get(domain)[0][0])[0]
-                    ).__str__()  # Go to cache to find current domain IP
-                else:
-                    # No A record exists for this NS record
-                    resIP = getIP(cache["ns"].get(domain)[0][0], cache, cs)
-                # NS record points
-
-            elif cache["a"].contains(domain):
-                # NS record doesn't exist but A record does
-                resIP = InetAddr.fromNetwork(
-                    cache["a"].getIpAddresses(domain)[0]
-                ).__str__()
-            elif cache["cname"].contains(domain):
-                # NS/A records don't exist but CNAME does
-                resIP = getIP(cache["cname"].getCanonicalName(domain), cache, cs)
-            else:
-                # There's a problem, the domain wasn't cached
-                raise Exception
+            resIP = getIP(domain, cache, cs)
             return resIP
+    return resIP
 
 
 # >>> entry point of ncsdns.py <<<
